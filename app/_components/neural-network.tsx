@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import * as tf from "@tensorflow/tfjs";
-import { DQNAgent } from "./dino-game";
+import { DQNAgent } from "./self-driving-simulator";
 
 interface Neuron {
   x: number;
@@ -21,8 +21,8 @@ interface NeuralNetworkProps {
   updateInputValues: (newInputs: number[]) => void;
 }
 
-// Update architecture: input is now 4 values.
-const NETWORK_ARCHITECTURE = [4, 16, 16, 2];
+// Network architecture: [4, 16, 16, 5]
+const NETWORK_ARCHITECTURE = [4, 16, 16, 5];
 
 export default function NeuralNetwork({
   agent,
@@ -35,13 +35,10 @@ export default function NeuralNetwork({
   const [weightSummaries, setWeightSummaries] = useState<string[]>([]);
   const activationModels = useRef<Record<number, tf.LayersModel>>({});
 
-  // Cache intermediate activation models for each layer (excluding input layer).
   useEffect(() => {
     if (!agent || !agent.model) return;
     const models: Record<number, tf.LayersModel> = {};
-    // For each layer index in NETWORK_ARCHITECTURE (layer 0 is input, so skip it)
     for (let layerIdx = 1; layerIdx < NETWORK_ARCHITECTURE.length; layerIdx++) {
-      // Map to corresponding layer in agent.model (layerIdx - 1)
       models[layerIdx] = tf.model({
         inputs: agent.model.inputs,
         outputs: agent.model.layers[layerIdx - 1].output as tf.SymbolicTensor,
@@ -50,7 +47,6 @@ export default function NeuralNetwork({
     activationModels.current = models;
   }, [agent]);
 
-  // Calculate positions for neurons in each layer.
   useEffect(() => {
     const newNeurons: Neuron[] = [];
     const canvasWidth = 700;
@@ -74,9 +70,7 @@ export default function NeuralNetwork({
   const updateActivations = useCallback(async () => {
     if (!agent || !agent.model) return;
     const activations: Record<number, number[]> = {};
-    // For input layer, use inputValues directly.
     activations[0] = inputValues;
-    // For each subsequent layer, use cached activation model.
     const promises = Object.entries(activationModels.current).map(
       async ([layerStr, model]) => {
         const layer = parseInt(layerStr, 10);
@@ -89,7 +83,6 @@ export default function NeuralNetwork({
       }
     );
     await Promise.all(promises);
-    // Update neurons with corresponding activations.
     setNeurons((prev) =>
       prev.map((neuron) => {
         const act = activations[neuron.layer];
@@ -99,7 +92,6 @@ export default function NeuralNetwork({
         return neuron;
       })
     );
-    // Update weight summaries.
     const summaries: string[] = [];
     agent.model.layers.forEach((layer, idx) => {
       const weights = layer.getWeights();
@@ -153,13 +145,13 @@ export default function NeuralNetwork({
         neuron.y,
         20
       );
-      gradient.addColorStop(0, `rgba(59, 130, 246, ${intensity})`);
-      gradient.addColorStop(1, "rgba(59, 130, 246, 0.1)");
+      gradient.addColorStop(0, `rgba(52, 152, 219, ${intensity})`);
+      gradient.addColorStop(1, "rgba(52, 152, 219, 0.1)");
       ctx.fillStyle = gradient;
       ctx.fill();
       ctx.strokeStyle = "rgba(59, 130, 246, 0.5)";
       ctx.stroke();
-      ctx.fillStyle = "#000";
+      ctx.fillStyle = "#101010";
       ctx.font = "10px monospace";
       ctx.textAlign = "center";
       ctx.fillText(neuron.activation.toFixed(2), neuron.x, neuron.y + 30);
@@ -171,44 +163,48 @@ export default function NeuralNetwork({
   }, [neurons, drawNetwork]);
 
   return (
-    <Card className="p-6 w-full max-w-3xl mx-auto">
+    <Card className="p-6">
       <div className="space-y-6">
         <h3 className="text-2xl font-medium">DQN Network Visualization</h3>
         <div className="grid grid-cols-4 gap-4">
-          {[
-            "Distance",
-            "Obstacle Speed",
-            "Obstacle Width",
-            "Dino Velocity",
-          ].map((label, idx) => (
-            <div key={idx}>
-              <p className="text-sm font-medium">{label}</p>
-              <Slider
-                value={[inputValues[idx]]}
-                min={0}
-                max={1}
-                step={0.01}
-                onValueChange={([val]) => {
-                  const newInputs = [...inputValues];
-                  newInputs[idx] = val;
-                  updateInputValues(newInputs);
-                }}
-              />
-              <p className="text-sm">{inputValues[idx].toFixed(2)}</p>
-            </div>
-          ))}
+          {["Front Distance", "Left Distance", "Right Distance", "Speed"].map(
+            (label, idx) => (
+              <div key={idx}>
+                <p className="text-sm font-medium">{label}</p>
+                <Slider
+                  value={[inputValues[idx]]}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onValueChange={([val]) => {
+                    const newInputs = [...inputValues];
+                    newInputs[idx] = val;
+                    updateInputValues(newInputs);
+                  }}
+                />
+                <p className="text-sm">{inputValues[idx].toFixed(2)}</p>
+              </div>
+            )
+          )}
         </div>
         <canvas
           ref={canvasRef}
           width={700}
           height={400}
-          className="w-full border rounded-lg bg-background"
+          className="w-full border rounded-lg"
         />
         <div className="mt-4">
           <p className="text-sm font-medium">Output Q‑Values:</p>
           <p className="text-sm font-mono">
-            Do Nothing: {outputValues[0].toFixed(2)} | Jump:{" "}
-            {outputValues[1].toFixed(2)}
+            {`NOOP: ${outputValues[0].toFixed(
+              2
+            )} | LEFT: ${outputValues[1].toFixed(
+              2
+            )} | RIGHT: ${outputValues[2].toFixed(
+              2
+            )} | ACCEL: ${outputValues[3].toFixed(
+              2
+            )} | BRAKE: ${outputValues[4].toFixed(2)}`}
           </p>
         </div>
         <div className="mt-4">

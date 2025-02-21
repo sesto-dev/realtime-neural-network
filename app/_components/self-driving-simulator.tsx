@@ -5,6 +5,22 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import * as tf from "@tensorflow/tfjs";
 
+// Simulation constants
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+const LANES = [200, 400, 600]; // x positions for 3 lanes
+const CAR_Y = 500; // fixed y position for our car
+const CAR_WIDTH = 40;
+const CAR_HEIGHT = 80;
+const OBSTACLE_WIDTH = 40;
+const OBSTACLE_HEIGHT = 80;
+const OBSTACLE_SPEED_BASE = 200; // base speed (pixels per second)
+const SPAWN_INTERVAL = 1.5; // seconds between obstacle spawns
+const FIXED_DT = 0.02; // fixed simulation time-step (seconds)
+
+// RL parameters
+const ACTIONS = ["NOOP", "LEFT", "RIGHT", "ACCEL", "BRAKE"]; // 5 discrete actions
+
 export interface Transition {
   state: number[];
   action: number;
@@ -18,174 +34,132 @@ interface PriorityTransition {
   priority: number;
 }
 
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 250;
-const GROUND_Y = GAME_HEIGHT - 20;
-const GRAVITY = 0.6;
-const JUMP_FORCE = -10;
-const BASE_OBSTACLE_SPEED = -4;
-const SPAWN_RATE = 0.02;
-const MIN_GAP = 200; // Minimum gap (in pixels) between obstacles
-const DEFAULT_TARGET_UPDATE_FREQUENCY = 5; // Update target network every 5 episodes
-const JUMP_PENALTY_THRESHOLD = 0.8; // Normalized distance threshold for unnecessary jumps
-const JUMP_PENALTY = -0.1; // Small penalty for jumping when no obstacle is near
-
-// -----------------------------
-// Environment: encapsulates game physics
-// -----------------------------
-class DinoEnvironment {
-  dino: { x: number; y: number; width: number; height: number };
-  obstacles: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    speed: number;
-    scored?: boolean;
-  }[];
-  score: number;
+// Self‑Driving Environment Class
+class SelfDrivingEnvironment {
+  carLane: number;
+  carSpeed: number; // in pixels per second
+  obstacles: { lane: number; y: number }[];
+  timeSinceLastSpawn: number;
+  distanceDriven: number;
   gameOver: boolean;
-  isJumping: boolean;
-  jumpVelocity: number;
 
   constructor() {
-    this.dino = { x: 50, y: GROUND_Y, width: 20, height: 40 };
+    this.carLane = 1; // start in middle lane
+    this.carSpeed = 150; // initial speed
     this.obstacles = [];
-    this.score = 0;
+    this.timeSinceLastSpawn = 0;
+    this.distanceDriven = 0;
     this.gameOver = false;
-    this.isJumping = false;
-    this.jumpVelocity = 0;
   }
 
   reset(): number[] {
-    this.dino = { x: 50, y: GROUND_Y, width: 20, height: 40 };
+    this.carLane = 1;
+    this.carSpeed = 150;
     this.obstacles = [];
-    this.score = 0;
+    this.timeSinceLastSpawn = 0;
+    this.distanceDriven = 0;
     this.gameOver = false;
-    this.isJumping = false;
-    this.jumpVelocity = 0;
     return this.getSensorState();
   }
 
-  updatePhysics(dt: number) {
-    // dt is the simulation delta time (in seconds)
-    if (this.isJumping) {
-      this.jumpVelocity += GRAVITY * dt;
-      const newY = this.dino.y + this.jumpVelocity * dt;
-      if (newY >= GROUND_Y) {
-        this.dino.y = GROUND_Y;
-        this.isJumping = false;
-        this.jumpVelocity = 0;
-      } else {
-        this.dino.y = newY;
-      }
-    }
-    this.obstacles.forEach((ob) => {
-      ob.x += ob.speed * dt;
-      if (!ob.scored && ob.x + ob.width < this.dino.x) {
-        this.score += 1;
-        ob.scored = true;
-      }
-    });
-    this.obstacles = this.obstacles.filter((ob) => ob.x + ob.width > 0);
+  spawnObstacle() {
+    const lane = Math.floor(Math.random() * LANES.length);
+    this.obstacles.push({ lane, y: -OBSTACLE_HEIGHT });
   }
 
-  spawnObstacle(dt: number) {
-    // Adjust spawn probability by dt to keep consistent obstacle frequency.
-    if (
-      this.obstacles.length === 0 ||
-      Math.max(...this.obstacles.map((ob) => ob.x)) < GAME_WIDTH - MIN_GAP
-    ) {
-      if (Math.random() < SPAWN_RATE * dt) {
-        const width = 15 + Math.random() * 10;
-        const height = 15 + Math.random() * 10;
-        this.obstacles.push({
-          x: GAME_WIDTH,
-          y: GROUND_Y,
-          width,
-          height,
-          speed: BASE_OBSTACLE_SPEED,
-          scored: false,
-        });
+  updatePhysics(dt: number) {
+    // Update distance driven
+    this.distanceDriven += this.carSpeed * dt;
+    // Obstacles move downward (faster if the car speeds up)
+    const obstacleSpeed = OBSTACLE_SPEED_BASE + this.carSpeed;
+    this.obstacles.forEach((ob) => {
+      ob.y += obstacleSpeed * dt;
+    });
+    // Remove off‑screen obstacles
+    this.obstacles = this.obstacles.filter(
+      (ob) => ob.y < CANVAS_HEIGHT + OBSTACLE_HEIGHT
+    );
+    // Spawn obstacles at regular intervals
+    this.timeSinceLastSpawn += dt;
+    if (this.timeSinceLastSpawn >= SPAWN_INTERVAL) {
+      this.spawnObstacle();
+      this.timeSinceLastSpawn = 0;
+    }
+  }
+
+  checkCollision(): boolean {
+    // Check collision if an obstacle in the same lane overlaps the car
+    for (let ob of this.obstacles) {
+      if (ob.lane === this.carLane) {
+        const carX = LANES[this.carLane] - CAR_WIDTH / 2;
+        const carY = CAR_Y - CAR_HEIGHT;
+        const obX = LANES[ob.lane] - OBSTACLE_WIDTH / 2;
+        const obY = ob.y;
+        if (
+          carX < obX + OBSTACLE_WIDTH &&
+          carX + CAR_WIDTH > obX &&
+          carY < obY + OBSTACLE_HEIGHT &&
+          carY + CAR_HEIGHT > obY
+        ) {
+          return true;
+        }
       }
     }
+    return false;
   }
 
   step(
     action: number,
     dt: number
   ): { nextState: number[]; reward: number; done: boolean } {
-    // Capture sensor state before action for penalty checking.
-    const sensorBefore = this.getSensorState();
-
-    // action: 0 = do nothing, 1 = jump
-    if (action === 1 && !this.isJumping && this.dino.y === GROUND_Y) {
-      this.isJumping = true;
-      this.jumpVelocity = JUMP_FORCE;
+    // Actions: 0 = NOOP, 1 = LEFT, 2 = RIGHT, 3 = ACCEL, 4 = BRAKE
+    if (action === 1 && this.carLane > 0) {
+      this.carLane -= 1;
+    } else if (action === 2 && this.carLane < LANES.length - 1) {
+      this.carLane += 1;
     }
-    // If jumping when no obstacle is near, apply a small penalty.
-    let penalty = 0;
-    if (action === 1 && sensorBefore[0] > JUMP_PENALTY_THRESHOLD) {
-      penalty = JUMP_PENALTY;
+    if (action === 3) {
+      this.carSpeed += 20;
+    } else if (action === 4) {
+      this.carSpeed = Math.max(50, this.carSpeed - 20);
     }
-    const prevScore = this.score;
+    // Update simulation physics
     this.updatePhysics(dt);
-    this.spawnObstacle(dt);
     if (this.checkCollision()) {
       this.gameOver = true;
       return { nextState: this.getSensorState(), reward: -100, done: true };
     }
-    // Add a small alive reward.
-    const aliveReward = 0.01;
-    const reward = this.score - prevScore + penalty + aliveReward;
+    // Reward based on distance traveled in this step (scaled arbitrarily)
+    const reward = (dt * this.carSpeed) / 100;
     return { nextState: this.getSensorState(), reward, done: this.gameOver };
   }
 
-  checkCollision(): boolean {
-    // Standard AABB collision detection
+  getSensorState(): number[] {
+    // Sensor state: [frontDistance, leftDistance, rightDistance, normalizedSpeed]
+    let frontDistance = 1;
+    let leftDistance = 1;
+    let rightDistance = 1;
     for (let ob of this.obstacles) {
-      const dinoLeft = this.dino.x;
-      const dinoRight = this.dino.x + this.dino.width;
-      const dinoTop = this.dino.y - this.dino.height;
-      const dinoBottom = this.dino.y;
-      const obLeft = ob.x;
-      const obRight = ob.x + ob.width;
-      const obTop = ob.y - ob.height;
-      const obBottom = ob.y;
-      if (
-        dinoRight > obLeft &&
-        dinoLeft < obRight &&
-        dinoBottom > obTop &&
-        dinoTop < obBottom
-      ) {
-        return true;
+      if (ob.lane === this.carLane && ob.y >= 0) {
+        const dist = (ob.y - CAR_Y + OBSTACLE_HEIGHT) / CANVAS_HEIGHT;
+        if (dist < frontDistance) frontDistance = dist;
+      }
+      if (ob.lane === this.carLane - 1 && ob.y >= 0) {
+        const dist = (ob.y - CAR_Y + OBSTACLE_HEIGHT) / CANVAS_HEIGHT;
+        if (dist < leftDistance) leftDistance = dist;
+      }
+      if (ob.lane === this.carLane + 1 && ob.y >= 0) {
+        const dist = (ob.y - CAR_Y + OBSTACLE_HEIGHT) / CANVAS_HEIGHT;
+        if (dist < rightDistance) rightDistance = dist;
       }
     }
-    return false;
-  }
-
-  getSensorState(): number[] {
-    // Provide richer sensor data:
-    // [normalized distance to next obstacle, normalized obstacle speed, normalized obstacle width, normalized dino vertical velocity]
-    let distance = 1,
-      speed = 0,
-      width = 0;
-    if (this.obstacles.length > 0) {
-      const ob = this.obstacles[0];
-      distance = (ob.x - this.dino.x) / GAME_WIDTH;
-      if (distance < 0) distance = 0;
-      speed = Math.abs(ob.speed / BASE_OBSTACLE_SPEED); // will be 1 if speed is BASE_OBSTACLE_SPEED
-      width = ob.width / 50; // assuming maximum width ~50 pixels
-    }
-    // Normalize dino vertical velocity: assume range [-10, 10]
-    const normalizedVelocity = (this.jumpVelocity + 10) / 20;
-    return [distance, speed, width, normalizedVelocity];
+    // Normalize speed (assume range [50, 300])
+    const normSpeed = (this.carSpeed - 50) / (300 - 50);
+    return [frontDistance, leftDistance, rightDistance, normSpeed];
   }
 }
 
-// -----------------------------
-// DQN Agent with Target Network and Prioritized Experience Replay
-// -----------------------------
+// DQNAgent with target network and prioritized experience replay
 export class DQNAgent {
   model: tf.Sequential;
   targetModel: tf.Sequential;
@@ -195,17 +169,17 @@ export class DQNAgent {
   epsilonMin: number = 0.01;
   gamma: number = 0.99;
   batchSize: number = 32;
-  targetUpdateFrequency: number = DEFAULT_TARGET_UPDATE_FREQUENCY;
+  targetUpdateFrequency: number = 10; // update target model every 10 episodes
 
   constructor() {
-    // Input shape is now [4]
     this.model = tf.sequential();
     this.model.add(
       tf.layers.dense({ units: 16, inputShape: [4], activation: "relu" })
     );
     this.model.add(tf.layers.dense({ units: 16, activation: "relu" }));
-    this.model.add(tf.layers.dense({ units: 2, activation: "linear" }));
-    // Use a lower learning rate.
+    this.model.add(
+      tf.layers.dense({ units: ACTIONS.length, activation: "linear" })
+    );
     this.model.compile({
       optimizer: tf.train.adam(0.0005),
       loss: "meanSquaredError",
@@ -216,7 +190,9 @@ export class DQNAgent {
       tf.layers.dense({ units: 16, inputShape: [4], activation: "relu" })
     );
     this.targetModel.add(tf.layers.dense({ units: 16, activation: "relu" }));
-    this.targetModel.add(tf.layers.dense({ units: 2, activation: "linear" }));
+    this.targetModel.add(
+      tf.layers.dense({ units: ACTIONS.length, activation: "linear" })
+    );
     this.targetModel.compile({
       optimizer: tf.train.adam(0.0005),
       loss: "meanSquaredError",
@@ -231,13 +207,13 @@ export class DQNAgent {
 
   selectAction(state: number[]): number {
     if (Math.random() < this.epsilon) {
-      return Math.floor(Math.random() * 2); // Uniform random between 0 and 1
+      return Math.floor(Math.random() * ACTIONS.length);
     }
     return tf.tidy(() => {
       const stateTensor = tf.tensor2d([state]);
       const qValues = this.model.predict(stateTensor) as tf.Tensor;
       const qArray = qValues.dataSync();
-      return qArray[0] > qArray[1] ? 0 : 1;
+      return qArray.indexOf(Math.max(...qArray));
     });
   }
 
@@ -245,9 +221,7 @@ export class DQNAgent {
     const defaultPriority = 1.0;
     let maxPriority = defaultPriority;
     for (const item of this.replayBuffer) {
-      if (item.priority > maxPriority) {
-        maxPriority = item.priority;
-      }
+      if (item.priority > maxPriority) maxPriority = item.priority;
     }
     this.replayBuffer.push({ transition, priority: maxPriority });
     if (this.replayBuffer.length > 10000) {
@@ -257,7 +231,6 @@ export class DQNAgent {
 
   async trainOnBatch(): Promise<number | null> {
     if (this.replayBuffer.length < this.batchSize) return null;
-    // Prioritized sampling
     const miniBatch: Array<{ index: number; data: Transition }> = [];
     const priorities = this.replayBuffer.map((item) => item.priority);
     const sumPriorities = priorities.reduce((a, b) => a + b, 0);
@@ -306,25 +279,22 @@ export class DQNAgent {
       qValuesNext,
       targetTensor,
     ]);
-    const loss = history.history.loss
+    const lossValue = history.history.loss
       ? (history.history.loss[0] as number)
       : null;
-    // Update priorities for sampled transitions.
     for (let i = 0; i < miniBatch.length; i++) {
       const idx = miniBatch[i].index;
       this.replayBuffer[idx].priority = tdErrors[i] + 1e-6;
     }
-    return loss;
+    return lossValue;
   }
 }
 
-// -----------------------------
-// Main Component: DinoGame
-// -----------------------------
-interface DinoGameProps {
+// Self‑Driving Simulator Component
+interface SelfDrivingSimulatorProps {
   agent: DQNAgent;
   updateNetworkVisualization: (inputs: number[], outputs: number[]) => void;
-  updateGameStats: (stats: {
+  updateSimulationStats: (stats: {
     isTraining: boolean;
     episodeCount: number;
     currentScore: number;
@@ -332,15 +302,15 @@ interface DinoGameProps {
     epsilon: number;
     loss: number | null;
   }) => void;
-  gameSpeed: number;
+  simSpeed: number;
 }
 
-export default function DinoGame({
+export default function SelfDrivingSimulator({
   agent,
   updateNetworkVisualization,
-  updateGameStats,
-  gameSpeed,
-}: DinoGameProps) {
+  updateSimulationStats,
+  simSpeed,
+}: SelfDrivingSimulatorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [episodeCount, setEpisodeCount] = useState(0);
@@ -349,45 +319,54 @@ export default function DinoGame({
   const [epsilon, setEpsilon] = useState(1.0);
   const [loss, setLoss] = useState<number | null>(null);
 
-  const envRef = useRef(new DinoEnvironment());
+  const envRef = useRef(new SelfDrivingEnvironment());
   const animationFrameRef = useRef<number>(0);
-  const gameSpeedRef = useRef(gameSpeed);
+  const simSpeedRef = useRef(simSpeed);
   useEffect(() => {
-    gameSpeedRef.current = gameSpeed;
-  }, [gameSpeed]);
+    simSpeedRef.current = simSpeed;
+  }, [simSpeed]);
 
-  const drawGame = useCallback(() => {
+  const drawSimulation = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const env = envRef.current;
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, GROUND_Y + env.dino.height, canvas.width, 2);
-    ctx.fillStyle = "#333";
-    ctx.fillRect(
-      env.dino.x,
-      env.dino.y - env.dino.height,
-      env.dino.width,
-      env.dino.height
-    );
-    ctx.fillStyle = "#666";
-    env.obstacles.forEach((ob) => {
-      ctx.fillRect(ob.x, ob.y - ob.height, ob.width, ob.height);
+    // Minimalistic dark background
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Draw lane markers
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    for (let i = 1; i < LANES.length; i++) {
+      ctx.beginPath();
+      ctx.moveTo(LANES[i] - 100, 0);
+      ctx.lineTo(LANES[i] - 100, canvas.height);
+      ctx.stroke();
+    }
+    // Draw obstacles
+    ctx.fillStyle = "#e74c3c";
+    envRef.current.obstacles.forEach((ob) => {
+      const x = LANES[ob.lane] - OBSTACLE_WIDTH / 2;
+      const y = ob.y;
+      ctx.fillRect(x, y, OBSTACLE_WIDTH, OBSTACLE_HEIGHT);
     });
+    // Draw our car
+    ctx.fillStyle = "#3498db";
+    const carX = LANES[envRef.current.carLane] - CAR_WIDTH / 2;
+    const carY = CAR_Y - CAR_HEIGHT;
+    ctx.fillRect(carX, carY, CAR_WIDTH, CAR_HEIGHT);
   }, []);
 
   useEffect(() => {
     const renderLoop = () => {
-      drawGame();
+      drawSimulation();
       animationFrameRef.current = requestAnimationFrame(renderLoop);
     };
     animationFrameRef.current = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(animationFrameRef.current);
-  }, [drawGame]);
+  }, [drawSimulation]);
 
-  // Episode loop with integrated training updates.
+  // Simulation loop using fixed dt and multiple iterations per visual frame
   useEffect(() => {
     if (!isRunning) return;
     let running = true;
@@ -396,20 +375,16 @@ export default function DinoGame({
       let state = env.reset();
       let done = false;
       let stepCounter = 0;
-      // Use a fixed simulation time-step for physics updates.
-      const fixedDt = 1;
       while (!done && running) {
-        // Determine the number of simulation iterations per visual frame.
-        const simulationSteps = Math.max(1, Math.floor(gameSpeedRef.current));
+        const simulationSteps = Math.max(1, Math.floor(simSpeedRef.current));
         for (let i = 0; i < simulationSteps; i++) {
           stepCounter++;
           const action = agent.selectAction(state);
-          // Pass the fixed dt so that physics remain consistent.
           const {
             nextState,
             reward,
             done: stepDone,
-          } = env.step(action, fixedDt);
+          } = env.step(action, FIXED_DT);
           agent.storeTransition({
             state,
             action,
@@ -434,26 +409,23 @@ export default function DinoGame({
             break;
           }
         }
-        // Update visualization once per visual frame.
         tf.tidy(() => {
           const inputTensor = tf.tensor2d([state]);
           const prediction = agent.model.predict(inputTensor) as tf.Tensor;
           const output = prediction.dataSync();
           updateNetworkVisualization(state, Array.from(output));
         });
-        updateGameStats({
+        updateSimulationStats({
           isTraining: isRunning,
-          episodeCount: episodeCount + 1, // Will update after episode completion.
-          currentScore: env.score,
+          episodeCount: episodeCount + 1,
+          currentScore: env.distanceDriven,
           bestScore: bestScore,
           epsilon: agent.epsilon,
           loss: loss,
         });
-        // Use a constant delay for visualization.
         await new Promise((res) => setTimeout(res, 20));
       }
-      // After episode completes, update cumulative metrics.
-      const episodeScore = env.score;
+      const episodeScore = env.distanceDriven;
       const newEpisodeCount = episodeCount + 1;
       const newBestScore = Math.max(bestScore, episodeScore);
       setCurrentScore(episodeScore);
@@ -485,11 +457,7 @@ export default function DinoGame({
 
   const handleReset = () => {
     setIsRunning(false);
-    // Do not reset episodeCount and bestScore so they persist across rounds.
-    setCurrentScore(0);
-    setEpsilon(1.0);
-    setLoss(null);
-    envRef.current = new DinoEnvironment();
+    envRef.current = new SelfDrivingEnvironment();
     agent.replayBuffer = [];
     agent.epsilon = 1.0;
     agent.model.dispose();
@@ -503,7 +471,7 @@ export default function DinoGame({
     <Card className="p-6 w-full max-w-4xl mx-auto">
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h3 className="text-2xl font-medium">Dino Game – RL Agent</h3>
+          <h3 className="text-2xl font-medium">Self‑Driving Car – RL Agent</h3>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="icon" onClick={handleStartPause}>
               {isRunning ? "Pause" : "Start"}
@@ -515,9 +483,9 @@ export default function DinoGame({
         </div>
         <canvas
           ref={canvasRef}
-          width={GAME_WIDTH}
-          height={GAME_HEIGHT}
-          className="w-full border rounded-lg bg-background"
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
+          className="w-full border rounded-lg"
         />
       </div>
     </Card>
