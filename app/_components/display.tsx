@@ -19,7 +19,7 @@ export default function Display() {
   const [bestScore, setBestScore] = useState(0);
   const [epsilon, setEpsilon] = useState(1.0);
   const [loss, setLoss] = useState<number | null>(null);
-  const [gameSpeed, setGameSpeed] = useState(1.0);
+  const [gameSpeed, setGameSpeed] = useState(3.0);
 
   // Called by DinoGame to update the visualization inputs/outputs.
   const updateNetworkVisualization = (inputs: number[], outputs: number[]) => {
@@ -50,12 +50,12 @@ export default function Display() {
   };
 
   return (
-    <Card className="p-6 w-full max-w-7xl mx-auto">
+    <Card className="p-6 w-full max-w-7xl mx-auto max-h-[90vh]">
       <h2 className="text-3xl font-bold mb-6">
         Dino Game with Neural Network Visualization
       </h2>
       <div className="grid grid-cols-2 gap-6">
-        <div>
+        <div className="space-y-4">
           <h3 className="text-xl font-semibold mb-4">Game</h3>
           <DinoGame
             agent={agentRef.current}
@@ -63,6 +63,49 @@ export default function Display() {
             updateGameStats={updateGameStats}
             gameSpeed={gameSpeed}
           />
+          <Card className="p-6 w-full max-w-7xl mx-auto">
+            <div className="mt-6 grid grid-cols-5 gap-4">
+              <div>
+                <p className="text-sm font-medium">Status</p>
+                <p className="text-2xl font-bold">
+                  {isTraining ? "Training" : "Idle"}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm font-medium">Episode</p>
+                <p className="text-2xl font-bold">{episodeCount}</p>
+              </div>
+              <div>
+                <p className="text-sm font-medium">Score (Cleared Obstacles)</p>
+                <p className="text-2xl font-bold">{currentScore}</p>
+              </div>
+              <div>
+                <p className="text-sm font-medium">Best Score</p>
+                <p className="text-2xl font-bold">{bestScore}</p>
+              </div>
+              <div>
+                <p className="text-sm font-medium">Epsilon</p>
+                <p className="text-2xl font-bold">{epsilon.toFixed(2)}</p>
+              </div>
+            </div>
+            <div className="mt-6">
+              <p className="text-sm font-medium">Game Speed</p>
+              <Slider
+                value={[gameSpeed]}
+                min={1}
+                max={25}
+                step={0.1}
+                onValueChange={([val]) => setGameSpeed(val)}
+              />
+              <p className="text-sm">{gameSpeed.toFixed(1)}×</p>
+            </div>
+            <div className="mt-6">
+              <p className="text-sm font-medium">Loss</p>
+              <p className="text-2xl font-bold">
+                {loss !== null ? loss.toFixed(4) : "N/A"}
+              </p>
+            </div>
+          </Card>
         </div>
         <div>
           <h3 className="text-xl font-semibold mb-4">Neural Network</h3>
@@ -73,47 +116,6 @@ export default function Display() {
             updateInputValues={handleInputChange}
           />
         </div>
-      </div>
-      <div className="mt-6 grid grid-cols-5 gap-4">
-        <div>
-          <p className="text-sm font-medium">Status</p>
-          <p className="text-2xl font-bold">
-            {isTraining ? "Training" : "Idle"}
-          </p>
-        </div>
-        <div>
-          <p className="text-sm font-medium">Episode</p>
-          <p className="text-2xl font-bold">{episodeCount}</p>
-        </div>
-        <div>
-          <p className="text-sm font-medium">Score (Cleared Obstacles)</p>
-          <p className="text-2xl font-bold">{currentScore}</p>
-        </div>
-        <div>
-          <p className="text-sm font-medium">Best Score</p>
-          <p className="text-2xl font-bold">{bestScore}</p>
-        </div>
-        <div>
-          <p className="text-sm font-medium">Epsilon</p>
-          <p className="text-2xl font-bold">{epsilon.toFixed(2)}</p>
-        </div>
-      </div>
-      <div className="mt-6">
-        <p className="text-sm font-medium">Game Speed</p>
-        <Slider
-          value={[gameSpeed]}
-          min={1}
-          max={5}
-          step={0.1}
-          onValueChange={([val]) => setGameSpeed(val)}
-        />
-        <p className="text-sm">{gameSpeed.toFixed(1)}×</p>
-      </div>
-      <div className="mt-6">
-        <p className="text-sm font-medium">Loss</p>
-        <p className="text-2xl font-bold">
-          {loss !== null ? loss.toFixed(4) : "N/A"}
-        </p>
       </div>
     </Card>
   );
